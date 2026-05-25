@@ -1,0 +1,23 @@
+{
+  "cxxNamespace": ["reactnativehero_tencentcloudtts"],
+  "ios": {
+    "iosModuleName": "TencentCloudTts"
+  },
+  "android": {
+    "androidNamespace": ["reactnativehero","tencentcloudtts"],
+    "androidCxxLibName": "reactnativehero_tencentcloudtts"
+  },
+  "autolinking": {
+    "TencentCloudTts": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "TencentCloudTts"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "TencentCloudTts"
+      }
+    }
+  },
+  "ignorePaths": ["node_modules"]
+}
