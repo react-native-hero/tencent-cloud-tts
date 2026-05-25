@@ -6,6 +6,7 @@ import android.media.AudioTrack
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.Log
 import com.facebook.proguard.annotations.DoNotStrip
 import com.tencent.cloud.stream.tts.*
 import com.tencent.cloud.stream.tts.core.ws.Credential
@@ -73,7 +74,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   private var eventCallback: ((event: String, data: String, error: String) -> Unit)? = null
   private var streamingPlayer: StreamingPcmPlayer? = null
   private var configuredSampleRate: Int = 16000
-  private var isReady = false
   private var pendingText: String? = null
   private var silentReconnect = false
   private var collectedAudio = ByteArray(0)
@@ -116,13 +116,19 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     collectedAudio = ByteArray(0)
     stopAudio()
 
-    if (isReady && synthesizer != null) {
-      pendingText = null
-      try {
-        synthesizer?.process(text)
-        synthesizer?.stop()
-      } catch (_: Exception) {}
-      isReady = false
+    if (synthesizer != null) {
+      pendingText = text
+      try { synthesizer?.cancel() } catch (_: Exception) {}
+      // 超时兜底：3秒后如果 pendingText 还在（回调未触发），强制重建
+      val timeoutGen = buildCount
+      Handler(Looper.getMainLooper()).postDelayed({
+        if (pendingText != null && buildCount == timeoutGen) {
+          val saved = pendingText
+          pendingText = null
+          silentReconnect = true
+          buildSynthesizer()
+        }
+      }, 3000)
     } else {
       silentReconnect = true
       pendingText = text
@@ -134,7 +140,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     pendingText = null
     stopAudio()
     try { synthesizer?.cancel() } catch (_: Exception) {}
-    isReady = false
     synthesizer = null
   }
 
@@ -142,7 +147,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     pendingText = null
     stopAudio()
     try { synthesizer?.stop() } catch (_: Exception) {}
-    isReady = false
   }
 
   override fun setEventCallback(callback: (event: String, data: String, error: String) -> Unit) {
@@ -159,9 +163,8 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     buildCount++
     val gen = buildCount
 
-    try { synthesizer?.cancel() } catch (_: Exception) {}
+    // synthesizer 应该已在回调中被置 null，但防御性保留
     synthesizer = null
-    isReady = false
 
     val cred = credential ?: return
     val req = createRequest(savedConfig ?: return)
@@ -170,7 +173,9 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
       val syn = FlowingSpeechSynthesizer(SpeechClient(), cred, req, createListener(gen))
       syn.start()
       synthesizer = syn
-    } catch (_: Exception) {}
+    } catch (e: Exception) {
+      Log.e("TTS", "buildSynthesizer gen=$gen 失败: $e")
+    }
   }
 
   private fun createListener(generation: Long): FlowingSpeechSynthesizerListener {
@@ -180,9 +185,9 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
       }
 
       override fun onSynthesisStart(response: SpeechSynthesizerResponse) {
-        if (isStale()) return
-
-        isReady = true
+        if (isStale()) {
+          return
+        }
 
         pendingText?.let { text ->
           pendingText = null
@@ -190,7 +195,9 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
             try {
               synthesizer?.process(text)
               synthesizer?.stop()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+              Log.e("TTS", "Handler.post 合成失败: $e")
+            }
           }
         }
 
@@ -201,11 +208,17 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
       }
 
       override fun onSynthesisEnd(response: SpeechSynthesizerResponse) {
-        if (isStale()) return
-        isReady = false
+        if (isStale()) {
+          return
+        }
         synthesizer = null
 
         sendEvent("onFinish", "", "")
+
+        pendingText?.let {
+          silentReconnect = true
+          buildSynthesizer()
+        }
       }
 
       override fun onAudioResult(buffer: ByteBuffer) {
@@ -232,18 +245,30 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
       }
 
       override fun onSynthesisCancel() {
-        if (isStale()) return
-        isReady = false
+        if (isStale()) {
+          return
+        }
         synthesizer = null
         stopAudio()
+
+        pendingText?.let {
+          silentReconnect = true
+          buildSynthesizer()
+        }
       }
 
       override fun onSynthesisFail(response: SpeechSynthesizerResponse) {
-        if (isStale()) return
-        isReady = false
+        if (isStale()) {
+          return
+        }
         synthesizer = null
         stopAudio()
         sendEvent("onError", "", response.message ?: "合成失败")
+
+        pendingText?.let {
+          silentReconnect = true
+          buildSynthesizer()
+        }
       }
     }
   }
