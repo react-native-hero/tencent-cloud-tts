@@ -21,6 +21,7 @@ Pod::Spec.new do |s|
 
   s.dependency 'React-jsi'
   s.dependency 'React-callinvoker'
+  s.dependency 'QCloudStreamTTS'
 
   load 'nitrogen/generated/ios/TencentCloudTts+autolinking.rb'
   add_nitrogen_files(s)
