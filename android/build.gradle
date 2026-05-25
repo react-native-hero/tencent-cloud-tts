@@ -39,6 +39,7 @@ apply plugin: "com.facebook.react"
 
 android {
   namespace "com.margelo.nitro.reactnativehero.tencentcloudtts"
+  ndkVersion "27.1.12297006"
 
   compileSdkVersion getExtOrDefault("compileSdkVersion")
 
@@ -115,4 +116,9 @@ android {
 dependencies {
   implementation "com.facebook.react:react-android"
   implementation project(":react-native-nitro-modules")
+  // 腾讯云流式 TTS SDK
+  implementation fileTree(include: ['*.jar', '*.aar'], dir: 'libs')
+  implementation files("libs/stream_tts-release-v2.0.16-20260128-d80cafe.aar")
+  implementation 'com.squareup.okhttp3:okhttp:4.9.3'
+  implementation 'com.google.code.gson:gson:2.8.9'
 }
