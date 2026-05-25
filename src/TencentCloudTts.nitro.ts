@@ -10,7 +10,6 @@ export interface TencentCloudTtsConfig {
   codec?: string;
   speed?: number;
   volume?: number;
-  language?: number;
   sampleRate?: number;
 }
 

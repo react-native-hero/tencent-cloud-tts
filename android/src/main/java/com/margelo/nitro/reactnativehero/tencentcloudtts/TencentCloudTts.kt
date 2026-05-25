@@ -106,9 +106,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     if (config.connectTimeout != null && config.connectTimeout!! > 0) {
       req.set("connectTimeout", config.connectTimeout!!.toInt().toString())
     }
-    if (config.language != null) {
-      req.set("Language", config.language!!.toInt().toString())
-    }
     return req
   }
 

@@ -39,7 +39,6 @@ apply plugin: "com.facebook.react"
 
 android {
   namespace "com.margelo.nitro.reactnativehero.tencentcloudtts"
-  ndkVersion "27.1.12297006"
 
   compileSdkVersion getExtOrDefault("compileSdkVersion")
 

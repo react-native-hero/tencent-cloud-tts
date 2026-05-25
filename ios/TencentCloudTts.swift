@@ -152,9 +152,6 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     if let value = config.volume {
       c.setApiParam("Volume", fvalue: Float(value))
     }
-    if let value = config.language {
-      c.setApiParam("Language", ivalue: Int(value))
-    }
     if let value = config.sampleRate {
       c.setApiParam("SampleRate", ivalue: Int(value))
     }
