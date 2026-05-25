@@ -113,39 +113,24 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   }
 
   override fun synthesize(text: String) {
-    sendDebug("synthesize()  called, text=\"${text.take(20)}...\", isReady=$isReady, synthesizer=${synthesizer != null}, buildCount=$buildCount")
-
     collectedAudio = ByteArray(0)
     stopAudio()
 
     if (isReady && synthesizer != null) {
-      sendDebug("→ 走直接路径: process+stop")
-      // synthesizer 已就绪（onReady 首次合成），直接调用
       pendingText = null
       try {
-        sendDebug("→ 执行 process()")
         synthesizer?.process(text)
-        sendDebug("→ process() 完成，执行 stop()")
         synthesizer?.stop()
-        sendDebug("→ stop() 完成")
-      } catch (e: Exception) {
-        sendDebug("→ process/stop 异常: ${e.message}")
-      }
+      } catch (_: Exception) {}
       isReady = false
-      sendDebug("→ 直接路径结束，isReady=false")
     } else {
-      sendDebug("→ 走重建路径: silentReconnect=true, 准备 buildSynthesizer()")
-      // 未就绪（按钮点击等后续调用），重建连接走 pendingText
-      // pendingText 必须在 buildSynthesizer 之前设置，因为 start() 会同步触发 onSynthesisStart
       silentReconnect = true
       pendingText = text
       buildSynthesizer()
-      sendDebug("→ 重建路径结束")
     }
   }
 
   override fun cancel() {
-    sendDebug("cancel() called")
     pendingText = null
     stopAudio()
     try { synthesizer?.cancel() } catch (_: Exception) {}
@@ -154,7 +139,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   }
 
   override fun stop() {
-    sendDebug("stop() called, synthesizer=${synthesizer != null}")
     pendingText = null
     stopAudio()
     try { synthesizer?.stop() } catch (_: Exception) {}
@@ -172,72 +156,45 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   // MARK: - Private
 
   private fun buildSynthesizer() {
-    // 先递增代数，使旧 listener 回调失效
     buildCount++
     val gen = buildCount
-    sendDebug("buildSynthesizer() buildCount=$gen")
 
     try { synthesizer?.cancel() } catch (_: Exception) {}
     synthesizer = null
     isReady = false
 
-    val cred = credential ?: run {
-      sendDebug("buildSynthesizer: credential 为空，中止")
-      return
-    }
-
-    // 每次重建刷新 sessionId，防止服务端因重复 sessionId 拒绝连接
-    val req = createRequest(savedConfig ?: run {
-      sendDebug("buildSynthesizer: savedConfig 为空，中止")
-      return
-    })
+    val cred = credential ?: return
+    val req = createRequest(savedConfig ?: return)
 
     try {
-      // 每个 synthesizer 使用独立的 SpeechClient，避免共享 WebSocket 连接
-      sendDebug("buildSynthesizer: 创建新 FlowingSpeechSynthesizer")
       val syn = FlowingSpeechSynthesizer(SpeechClient(), cred, req, createListener(gen))
       syn.start()
       synthesizer = syn
-      sendDebug("buildSynthesizer: start() 完成")
-    } catch (e: Exception) {
-      sendDebug("buildSynthesizer 异常: ${e.message}")
-    }
+    } catch (_: Exception) {}
   }
 
   private fun createListener(generation: Long): FlowingSpeechSynthesizerListener {
     return object : FlowingSpeechSynthesizerListener() {
       private fun isStale(): Boolean {
-        val stale = generation != buildCount
-        if (stale) sendDebug("listener($generation) 已过期，buildCount=$buildCount，跳过")
-        return stale
+        return generation != buildCount
       }
 
       override fun onSynthesisStart(response: SpeechSynthesizerResponse) {
         if (isStale()) return
-        sendDebug("onSynthesisStart 触发, generation=$generation, pendingText=${pendingText != null}, silentReconnect=$silentReconnect")
 
         isReady = true
 
         pendingText?.let { text ->
           pendingText = null
-          sendDebug("→ 处理 pendingText: \"${text.take(20)}...\"")
-          // 用 Handler.post 把 process+stop 放到主线程消息队列尾部，
-          // 等 onSynthesisStart 返回后状态机从 STATE_START 过渡完成再执行
           Handler(Looper.getMainLooper()).post {
             try {
-              sendDebug("→ 执行 process()")
               synthesizer?.process(text)
-              sendDebug("→ process() 完成，执行 stop()")
               synthesizer?.stop()
-              sendDebug("→ stop() 完成")
-            } catch (e: Exception) {
-              sendDebug("→ process/stop 异常: ${e.message}")
-            }
+            } catch (_: Exception) {}
           }
         }
 
         if (!silentReconnect) {
-          sendDebug("→ 发送 onReady 事件")
           sendEvent("onReady", "", "")
         }
         silentReconnect = false
@@ -245,7 +202,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
 
       override fun onSynthesisEnd(response: SpeechSynthesizerResponse) {
         if (isStale()) return
-        sendDebug("onSynthesisEnd 触发, generation=$generation")
         isReady = false
         synthesizer = null
 
@@ -256,7 +212,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
         if (isStale()) return
         val bytes = ByteArray(buffer.remaining())
         buffer.get(bytes)
-        sendDebug("onAudioResult: ${bytes.size} 字节")
 
         collectedAudio = collectedAudio + bytes
 
@@ -278,7 +233,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
 
       override fun onSynthesisCancel() {
         if (isStale()) return
-        sendDebug("onSynthesisCancel 触发, generation=$generation")
         isReady = false
         synthesizer = null
         stopAudio()
@@ -286,7 +240,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
 
       override fun onSynthesisFail(response: SpeechSynthesizerResponse) {
         if (isStale()) return
-        sendDebug("onSynthesisFail 触发, msg=${response.message}")
         isReady = false
         synthesizer = null
         stopAudio()
@@ -302,10 +255,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
 
   private fun sendEvent(event: String, data: String, error: String) {
     eventCallback?.invoke(event, data, error)
-  }
-
-  private fun sendDebug(msg: String) {
-    sendEvent("onMessage", "[debug] $msg", "")
   }
 
   companion object {
