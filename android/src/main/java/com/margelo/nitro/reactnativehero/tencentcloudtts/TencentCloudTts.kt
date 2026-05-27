@@ -76,7 +76,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   private var configuredSampleRate: Int = 16000
   private var pendingText: String? = null
   private var silentReconnect = false
-  private var collectedAudio = ByteArray(0)
   private var buildCount = 0L
 
   override fun setup(config: TencentCloudTtsConfig) {
@@ -110,7 +109,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   }
 
   override fun synthesize(text: String) {
-    collectedAudio = ByteArray(0)
     stopAudio()
 
     if (synthesizer != null) {
@@ -222,8 +220,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
         if (isStale()) return
         val bytes = ByteArray(buffer.remaining())
         buffer.get(bytes)
-
-        collectedAudio = collectedAudio + bytes
 
         if (streamingPlayer == null) {
           streamingPlayer = StreamingPcmPlayer(configuredSampleRate)
