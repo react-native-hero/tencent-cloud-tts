@@ -1,6 +1,6 @@
 {
   "name": "@react-native-hero/tencent-cloud-tts",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "tencent-cloud-tts",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",

@@ -76,8 +76,11 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   private var configuredSampleRate: Int = 16000
   private var pendingText: String? = null
   private var buildCount = 0L
+  private val apiParams = mutableMapOf<String, String>()
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun setup(config: TencentCloudTtsConfig) {
+    teardownActiveSynthesizer(invalidateListeners = true)
     configuredSampleRate = config.sampleRate?.toInt() ?: 16000
     savedConfig = config
 
@@ -90,7 +93,6 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
 
     request = createRequest(config)
     // Save credentials only; connect on first synthesize (avoid double buildSynthesizer).
-    synthesizer = null
   }
 
   private fun createRequest(config: TencentCloudTtsConfig): FlowingSpeechSynthesizerRequest {
@@ -105,6 +107,9 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     if (config.connectTimeout != null && config.connectTimeout!! > 0) {
       req.set("connectTimeout", config.connectTimeout!!.toInt().toString())
     }
+    for ((key, value) in apiParams) {
+      req.set(key, value)
+    }
     return req
   }
 
@@ -117,27 +122,43 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   }
 
   override fun synthesize(text: String) {
-    stopAudio()
-
-    if (synthesizer != null) {
-      pendingText = text
-      try {
-        synthesizer?.cancel()
-      } catch (_: Exception) {}
-      // Rebuild via onSynthesisCancel with pendingText; no 3s retry timer.
-    } else {
-      pendingText = text
-      buildSynthesizer()
-    }
+    mainHandler.post { synthesizeOnMain(text) }
   }
 
   override fun cancel() {
+    mainHandler.post { cancelOnMain() }
+  }
+
+  private fun synthesizeOnMain(text: String) {
+    stopAudio()
+    pendingText = text
+
+    if (synthesizer != null) {
+      try {
+        synthesizer?.cancel()
+      } catch (_: Exception) {}
+      // Rebuild via onSynthesisCancel with pendingText.
+      return
+    }
+
+    buildSynthesizer()
+  }
+
+  private fun cancelOnMain() {
+    val hadPending = pendingText != null
     pendingText = null
+    teardownActiveSynthesizer(invalidateListeners = !hadPending)
+  }
+
+  private fun teardownActiveSynthesizer(invalidateListeners: Boolean) {
     stopAudio()
     try {
       synthesizer?.cancel()
     } catch (_: Exception) {}
     synthesizer = null
+    if (invalidateListeners) {
+      buildCount++
+    }
   }
 
   override fun stop() {
@@ -146,6 +167,7 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     try {
       synthesizer?.stop()
     } catch (_: Exception) {}
+    synthesizer = null
   }
 
   override fun setEventCallback(callback: (event: String, data: String, error: String) -> Unit) {
@@ -153,6 +175,7 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
   }
 
   override fun setApiParam(key: String, value: String) {
+    apiParams[key] = value
     request?.set(key, value)
   }
 
@@ -202,19 +225,28 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
           return
         }
 
-        pendingText?.let { text ->
-          pendingText = null
-          Handler(Looper.getMainLooper()).post {
+        val textToProcess = pendingText
+        pendingText = null
+        if (textToProcess != null) {
+          mainHandler.post {
+            if (isStale()) {
+              return@post
+            }
+            val syn = synthesizer
+            if (syn == null) {
+              pendingText = textToProcess
+              buildSynthesizer()
+              return@post
+            }
             try {
-              synthesizer?.process(text)
-              synthesizer?.stop()
+              syn.process(textToProcess)
+              syn.stop()
             } catch (e: Exception) {
               failSynthesis(e.message ?: "synthesis process failed")
             }
           }
         }
 
-        // onReady event is no longer sent; connection is managed internally
       }
 
       override fun onSynthesisEnd(response: SpeechSynthesizerResponse) {
@@ -273,7 +305,17 @@ class TencentCloudTts : HybridTencentCloudTtsSpec() {
     streamingPlayer = null
   }
 
+  private fun isBenignError(message: String): Boolean {
+    return message.contains("conn is null", ignoreCase = true)
+      || message.contains("Connection is null", ignoreCase = true)
+      || message.contains("CANCEL", ignoreCase = true)
+      || message.contains("取消", ignoreCase = true)
+  }
+
   private fun sendEvent(event: String, data: String, error: String) {
+    if (event == "onError" && error.isNotEmpty() && isBenignError(error)) {
+      return
+    }
     eventCallback?.invoke(event, data, error)
   }
 

@@ -179,6 +179,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     pendingText = nil
     stopAudio()
     controller?.stop()
+    controller = nil
   }
 
   func setEventCallback(callback: @escaping (String, String, String) -> Void) throws {
