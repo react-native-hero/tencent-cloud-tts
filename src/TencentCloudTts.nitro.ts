@@ -39,7 +39,7 @@ export interface TencentCloudTts extends HybridObject<{
 
   /**
    * 注册事件回调
-   * event: 'onReady' | 'onFinish' | 'onError' | 'onData' | 'onMessage'
+   * event: 'onFinish' | 'onError' | 'onData' | 'onMessage'
    * data: 事件相关数据（base64 音频数据或消息）
    * error: 错误信息
    */

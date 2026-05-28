@@ -2,7 +2,6 @@ import { NitroModules } from 'react-native-nitro-modules'
 import type { TencentCloudTts, TencentCloudTtsConfig } from './TencentCloudTts.nitro'
 
 type TtsEventListener = {
-  onReady?: () => void
   onError?: (error: string) => void
   onData?: (data: string) => void
   onMessage?: (message: string) => void
@@ -39,9 +38,6 @@ class TtsEngine {
   setListener(listener: TtsEventListener) {
     this.native.setEventCallback((event, data, error) => {
       switch (event) {
-        case 'onReady':
-          listener.onReady?.()
-          break
         case 'onFinish':
           listener.onFinish?.()
           break

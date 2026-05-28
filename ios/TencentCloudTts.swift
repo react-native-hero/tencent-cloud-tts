@@ -113,10 +113,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   private var eventCallback: ((String, String, String) -> Void)?
   private var configuredSampleRate: Int = 16000
 
-  private var isReady = false
   private var pendingText: String?
-  /// synthesize 触发自动重连时不发 onReady 事件到 JS，避免 onReady 处理器重复调用 synthesize
-  private var silentReconnect = false
 
   private var streamingPlayer: StreamingPCMPlayer?
   /// 如果音频是非 PCM 格式（WAV/MP3），回退为收集完毕后一次性播放
@@ -157,32 +154,25 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     }
 
     self.qcloudConfig = c
-
-    buildController()
+    // 延迟到首次 synthesize 再建连接
   }
 
   func synthesize(text: String) throws {
-    listener.reset()
     stopAudio()
     useFallbackPlayback = false
 
-    if controller == nil {
-      silentReconnect = true
-      buildController()
-    }
+    controller?.cancel()
+    controller = nil
 
-    if isReady {
-      controller?.synthesis(text)
-      controller?.stop()
-    } else {
-      pendingText = text
-    }
+    pendingText = text
+    buildController()
   }
 
   func cancel() throws {
     pendingText = nil
     stopAudio()
     controller?.cancel()
+    controller = nil
   }
 
   func stop() throws {
@@ -202,9 +192,8 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   // MARK: - Controller Lifecycle
 
   private func buildController() {
-    controller?.stop()
+    controller?.cancel()
     controller = nil
-    isReady = false
     useFallbackPlayback = false
 
     guard let config = qcloudConfig else { return }
@@ -212,23 +201,14 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   }
 
   fileprivate func onControllerReady() {
-    isReady = true
-
     if let text = pendingText {
       pendingText = nil
       controller?.synthesis(text)
       controller?.stop()
     }
-
-    // synthesize 触发重连时，pendingText 已发送，不必再通知 JS
-    if !silentReconnect {
-      sendEvent("onReady", data: "", error: "")
-    }
-    silentReconnect = false
   }
 
   fileprivate func onControllerFinish() {
-    isReady = false
     controller = nil
 
     // 非 PCM 格式（WAV/MP3），此时音频已全部收集，一次性播放

@@ -1,7 +1,6 @@
 import type { TencentCloudTtsConfig } from './TencentCloudTts.nitro'
 
 type TtsEventListener = {
-  onReady?: () => void
   onError?: (error: string) => void
   onData?: (data: string) => void
   onMessage?: (message: string) => void

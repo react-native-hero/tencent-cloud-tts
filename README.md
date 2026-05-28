@@ -23,9 +23,6 @@ import {
 const tts = new TtsEngine()
 
 tts.setListener({
-  onReady: () => {
-    console.log('ready')
-  },
   onData: (data) => {
     console.log(`收到音频数据: ${data.length} 字节`)
   },
