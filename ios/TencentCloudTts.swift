@@ -6,6 +6,8 @@ import VoiceCommon
 /// 使用 AVAudioEngine 实现实时 PCM 音频流播报
 /// 注意: AVAudioEngine/AVAudioPlayerNode 非线程安全，
 /// 所有操作必须派发到主线程执行。
+/// mainMixerNode 只接受 Float32 格式，所以使用 .pcmFormatFloat32
+/// 在 enqueue 时将 Int16 原始 PCM 转换为 Float32。
 private class StreamingPCMPlayer {
   private let engine = AVAudioEngine()
   private let playerNode = AVAudioPlayerNode()
@@ -13,8 +15,9 @@ private class StreamingPCMPlayer {
   private var engineStarted = false
 
   init?(sampleRate: Int) {
+    // mainMixerNode 只支持 Float32，必须使用 pcmFormatFloat32
     guard let format = AVAudioFormat(
-      commonFormat: .pcmFormatInt16,
+      commonFormat: .pcmFormatFloat32,
       sampleRate: Double(sampleRate),
       channels: 1,
       interleaved: false
@@ -35,9 +38,14 @@ private class StreamingPCMPlayer {
     ) else { return }
     buffer.frameLength = AVAudioFrameCount(frameLength)
 
+    // 将 Int16 PCM 转换为 Float32（mainMixerNode 需要）
     pcmData.withUnsafeBytes { ptr in
       guard let samples = ptr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-      buffer.int16ChannelData?.pointee.update(from: samples, count: frameLength)
+      guard let floatData = buffer.floatChannelData?.pointee else { return }
+      let scale = Float32(Int16.max)
+      for i in 0..<frameLength {
+        floatData[i] = Float32(samples[i]) / scale
+      }
     }
 
     // AVAudioEngine 操作必须在主线程执行
