@@ -4,10 +4,13 @@ import VoiceCommon
 
 // MARK: - Streaming PCM Player
 /// 使用 AVAudioEngine 实现实时 PCM 音频流播报
+/// 注意: AVAudioEngine/AVAudioPlayerNode 非线程安全，
+/// 所有操作必须派发到主线程执行。
 private class StreamingPCMPlayer {
   private let engine = AVAudioEngine()
   private let playerNode = AVAudioPlayerNode()
   private let audioFormat: AVAudioFormat
+  private var engineStarted = false
 
   init?(sampleRate: Int) {
     guard let format = AVAudioFormat(
@@ -20,12 +23,7 @@ private class StreamingPCMPlayer {
 
     engine.attach(playerNode)
     engine.connect(playerNode, to: engine.mainMixerNode, format: audioFormat)
-
-    do {
-      try engine.start()
-    } catch {
-      return nil
-    }
+    // 延迟到首次 enqueue 时在主线程启动 engine
   }
 
   func enqueue(pcmData: Data) {
@@ -42,23 +40,50 @@ private class StreamingPCMPlayer {
       buffer.int16ChannelData?.pointee.update(from: samples, count: frameLength)
     }
 
-    playerNode.scheduleBuffer(buffer)
-    if !playerNode.isPlaying {
-      playerNode.play()
+    // AVAudioEngine 操作必须在主线程执行
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      if !self.engineStarted {
+        do {
+          try self.engine.start()
+          self.engineStarted = true
+        } catch {
+          return
+        }
+      }
+      self.playerNode.scheduleBuffer(buffer)
+      if !self.playerNode.isPlaying {
+        self.playerNode.play()
+      }
     }
   }
 
   func flush() {
-    playerNode.stop()
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      self.playerNode.stop()
+    }
   }
 
   func stop() {
-    playerNode.stop()
-    engine.stop()
+    if Thread.isMainThread {
+      playerNode.stop()
+      engine.stop()
+      engineStarted = false
+    } else {
+      DispatchQueue.main.sync { [weak self] in
+        guard let self = self else { return }
+        self.playerNode.stop()
+        self.engine.stop()
+        self.engineStarted = false
+      }
+    }
   }
 
   deinit {
-    stop()
+    if engine.isRunning {
+      engine.stop()
+    }
   }
 }
 
@@ -118,6 +143,8 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   private var streamingPlayer: StreamingPCMPlayer?
   /// 如果音频是非 PCM 格式（WAV/MP3），回退为收集完毕后一次性播放
   private var useFallbackPlayback = false
+  /// 防止音频会话被重复配置
+  private var audioSessionConfigured = false
 
   // MARK: - HybridTencentCloudTtsSpec
 
@@ -160,6 +187,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   func synthesize(text: String) throws {
     stopAudio()
     useFallbackPlayback = false
+    audioSessionConfigured = false
 
     controller?.cancel()
     controller = nil
@@ -223,9 +251,16 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   // MARK: - Audio Streaming
 
   private func configureAudioSession() {
+    guard !audioSessionConfigured else { return }
+    audioSessionConfigured = true
     let session = AVAudioSession.sharedInstance()
-    try? session.setCategory(.playback, mode: .default)
-    try? session.setActive(true)
+    do {
+      try session.setCategory(.playback, mode: .default)
+      try session.setActive(true)
+    } catch {
+      audioSessionConfigured = false
+      sendEvent("onError", data: "", error: "音频会话配置失败: \(error.localizedDescription)")
+    }
   }
 
   fileprivate func onAudioData(_ data: Data) {
