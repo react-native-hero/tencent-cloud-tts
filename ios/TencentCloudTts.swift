@@ -13,6 +13,8 @@ private class StreamingPCMPlayer {
   private let playerNode = AVAudioPlayerNode()
   private let audioFormat: AVAudioFormat
   private var engineStarted = false
+  private var pendingBufferCount: Int = 0
+  var onAllBuffersPlayed: (() -> Void)?
 
   init?(sampleRate: Int) {
     // mainMixerNode 只支持 Float32，必须使用 pcmFormatFloat32
@@ -59,7 +61,16 @@ private class StreamingPCMPlayer {
           return
         }
       }
-      self.playerNode.scheduleBuffer(buffer)
+      self.pendingBufferCount += 1
+      self.playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        DispatchQueue.main.async {
+          guard let self = self else { return }
+          self.pendingBufferCount -= 1
+          if self.pendingBufferCount <= 0 {
+            self.onAllBuffersPlayed?()
+          }
+        }
+      }
       if !self.playerNode.isPlaying {
         self.playerNode.play()
       }
@@ -71,6 +82,10 @@ private class StreamingPCMPlayer {
       guard let self = self else { return }
       self.playerNode.stop()
     }
+  }
+
+  func hasPendingBuffers() -> Bool {
+    return pendingBufferCount > 0
   }
 
   func stop() {
@@ -147,12 +162,20 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   private var configuredSampleRate: Int = 16000
 
   private var pendingText: String?
+  private var pendingSynthesizeText: String?
 
   private var streamingPlayer: StreamingPCMPlayer?
   /// 如果音频是非 PCM 格式（WAV/MP3），回退为收集完毕后一次性播放
   private var useFallbackPlayback = false
   /// 防止音频会话被重复配置
   private var audioSessionConfigured = false
+
+  // MARK: Prebuffer（逐句播报无间隔衔接）
+  /// drain 期间并行合成下一句，音频暂存到此 buffer
+  private var isPrebuffering = false
+  private var prebufferChunks: [Data] = []
+  private var prebufferComplete = false
+  private var prebufferIsFallback = false
 
   // MARK: - HybridTencentCloudTtsSpec
 
@@ -193,6 +216,25 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   }
 
   func synthesize(text: String) throws {
+    if streamingPlayer?.hasPendingBuffers() == true {
+      startPrebuffer(text)
+      return
+    }
+    pendingSynthesizeText = nil
+    performSynthesize(text)
+  }
+
+  private func startPrebuffer(_ text: String) {
+    isPrebuffering = true
+    prebufferChunks = []
+    prebufferComplete = false
+    prebufferIsFallback = false
+
+    pendingText = text
+    buildController()
+  }
+
+  private func performSynthesize(_ text: String) {
     stopAudio()
     useFallbackPlayback = false
     audioSessionConfigured = false
@@ -206,6 +248,8 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
 
   func cancel() throws {
     pendingText = nil
+    pendingSynthesizeText = nil
+    clearPrebuffer()
     stopAudio()
     controller?.cancel()
     controller = nil
@@ -213,9 +257,18 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
 
   func stop() throws {
     pendingText = nil
+    pendingSynthesizeText = nil
+    clearPrebuffer()
     stopAudio()
     controller?.stop()
     controller = nil
+  }
+
+  private func clearPrebuffer() {
+    isPrebuffering = false
+    prebufferChunks = []
+    prebufferComplete = false
+    prebufferIsFallback = false
   }
 
   func setEventCallback(callback: @escaping (String, String, String) -> Void) throws {
@@ -248,6 +301,14 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   fileprivate func onControllerFinish() {
     controller = nil
 
+    if isPrebuffering {
+      prebufferComplete = true
+      DispatchQueue.main.async { [weak self] in
+        self?.flushBufferedNextIfReady()
+      }
+      return
+    }
+
     // 非 PCM 格式（WAV/MP3），此时音频已全部收集，一次性播放
     if useFallbackPlayback {
       playCollectedAudio()
@@ -272,6 +333,19 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   }
 
   fileprivate func onAudioData(_ data: Data) {
+    if isPrebuffering {
+      if prebufferChunks.isEmpty && !prebufferIsFallback {
+        if isSelfDescribingAudio(data) {
+          prebufferIsFallback = true
+          return
+        }
+      }
+      if !prebufferIsFallback {
+        prebufferChunks.append(data)
+      }
+      return
+    }
+
     // 首个数据包判断音频格式
     if streamingPlayer == nil, !useFallbackPlayback {
       if isSelfDescribingAudio(data) {
@@ -280,6 +354,10 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
       }
       configureAudioSession()
       streamingPlayer = StreamingPCMPlayer(sampleRate: configuredSampleRate)
+      streamingPlayer?.onAllBuffersPlayed = { [weak self] in
+        guard let self = self else { return }
+        self.onPlayerDrained()
+      }
     }
 
     if useFallbackPlayback { return }
@@ -288,8 +366,66 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   }
 
   private func stopAudio() {
-    streamingPlayer?.flush()
+    streamingPlayer?.onAllBuffersPlayed = nil
+    streamingPlayer?.stop()
     streamingPlayer = nil
+  }
+
+  /// 当前 player buffer 全部播完时的回调
+  private func onPlayerDrained() {
+    streamingPlayer?.stop()
+    streamingPlayer = nil
+
+    if isPrebuffering && prebufferComplete {
+      flushBufferedNext()
+      return
+    }
+
+    if let pending = pendingSynthesizeText {
+      pendingSynthesizeText = nil
+      performSynthesize(pending)
+    }
+  }
+
+  /// 如果 prebuffer 已就绪且旧 player 已 drain，则立即用缓冲数据起新 player 播放
+  private func flushBufferedNextIfReady() {
+    guard isPrebuffering, prebufferComplete else { return }
+    guard streamingPlayer == nil || streamingPlayer?.hasPendingBuffers() == false else { return }
+    flushBufferedNext()
+  }
+
+  private func flushBufferedNext() {
+    guard !prebufferChunks.isEmpty else {
+      isPrebuffering = false
+      DispatchQueue.main.async { [weak self] in
+        self?.sendEvent("onFinish", data: "", error: "")
+      }
+      return
+    }
+
+    isPrebuffering = false
+
+    configureAudioSession()
+    guard let player = StreamingPCMPlayer(sampleRate: configuredSampleRate) else {
+      DispatchQueue.main.async { [weak self] in
+        self?.sendEvent("onError", data: "", error: "创建播放器失败")
+      }
+      return
+    }
+    streamingPlayer = player
+    streamingPlayer?.onAllBuffersPlayed = { [weak self] in
+      guard let self = self else { return }
+      self.onPlayerDrained()
+    }
+
+    for chunk in prebufferChunks {
+      player.enqueue(pcmData: chunk)
+    }
+    prebufferChunks = []
+
+    DispatchQueue.main.async { [weak self] in
+      self?.sendEvent("onFinish", data: "", error: "")
+    }
   }
 
   // MARK: - Fallback Playback

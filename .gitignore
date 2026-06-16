@@ -86,3 +86,6 @@ android/generated
 nitrogen/
 example/
 .github/
+
+AGENTS.md
+AGENTS.*.md
