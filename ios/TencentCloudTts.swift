@@ -160,6 +160,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
   private lazy var listener = TTSListener(tts: self)
   private var eventCallback: ((String, String, String) -> Void)?
   private var configuredSampleRate: Int = 16000
+  private var configuredCodec: String = "pcm"
 
   private var pendingText: String?
   private var pendingSynthesizeText: String?
@@ -181,6 +182,11 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
 
   func setup(config: TencentCloudTtsConfig) throws {
     configuredSampleRate = Int(config.sampleRate ?? 16000)
+    if let codec = config.codec, !codec.isEmpty {
+      configuredCodec = codec.lowercased()
+    } else {
+      configuredCodec = "pcm"
+    }
 
     let c = QCloudStreamTTSConfig()
 
@@ -238,6 +244,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     stopAudio()
     useFallbackPlayback = false
     audioSessionConfigured = false
+    listener.reset()
 
     controller?.cancel()
     controller = nil
@@ -332,10 +339,16 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     }
   }
 
+  /// codec=pcm 时 SDK 返回裸 PCM，不能做 MP3/WAV 魔数检测（PCM 字节常出现 0xFF 0xF?）
+  private func shouldUseFallbackPlayback(for data: Data) -> Bool {
+    guard configuredCodec != "pcm" else { return false }
+    return isSelfDescribingAudio(data)
+  }
+
   fileprivate func onAudioData(_ data: Data) {
     if isPrebuffering {
       if prebufferChunks.isEmpty && !prebufferIsFallback {
-        if isSelfDescribingAudio(data) {
+        if shouldUseFallbackPlayback(for: data) {
           prebufferIsFallback = true
           return
         }
@@ -348,7 +361,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
 
     // 首个数据包判断音频格式
     if streamingPlayer == nil, !useFallbackPlayback {
-      if isSelfDescribingAudio(data) {
+      if shouldUseFallbackPlayback(for: data) {
         useFallbackPlayback = true
         return
       }
@@ -437,7 +450,7 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
     configureAudioSession()
 
     let audioData: Data
-    if isSelfDescribingAudio(data) {
+    if configuredCodec != "pcm" && isSelfDescribingAudio(data) {
       audioData = data
     } else {
       audioData = addWavHeader(to: data, sampleRate: configuredSampleRate)
@@ -462,12 +475,13 @@ class TencentCloudTts: HybridTencentCloudTtsSpec {
 // MARK: - WAV / Format Helpers
 
 private func isSelfDescribingAudio(_ data: Data) -> Bool {
-  if data.count >= 4,
-     String(data: data[0..<4], encoding: .ascii) == "RIFF" {
+  if data.count >= 12,
+     String(data: data[0..<4], encoding: .ascii) == "RIFF",
+     String(data: data[8..<12], encoding: .ascii) == "WAVE" {
     return true
   }
   if data.count >= 2,
-     data[0] == 0xFF && (data[1] & 0xF0) == 0xF0 {
+     data[0] == 0xFF && (data[1] & 0xE0) == 0xE0 {
     return true
   }
   if data.count >= 3,
